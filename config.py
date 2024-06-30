@@ -32,12 +32,12 @@ def get_model_config() -> dict:
         "epochs": 25,
         "train_batch_size": 32,
         "valid_batch_size": 32,
-        "sequence_len": 260,
-        "embed_dim": 456,
-        "num_heads": 8,
+        "sequence_len": 300,
+        "embed_dim": 480, # 456, 480, 512, 516, 576
+        "num_heads": 12,
         "num_kv_heads": None,
-        "num_decoders": 6,
-        "ff_dim": 400,
+        "num_decoders": 8,
+        "ff_dim": 512, # 400, 433, 451, 512
         "dropout_prob": 0.2,
         "activation_name": 'gelu',
         "norm_placing": 'post',

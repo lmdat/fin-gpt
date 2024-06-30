@@ -6,7 +6,7 @@ import cores
 import dataset
 from tqdm import tqdm
 import numpy as np
-import datetime, time, os, json
+import datetime, time, os, json, sys
 from pathlib import Path
 from tokenizer import VnTokenizer
 
@@ -45,6 +45,32 @@ def load_model_state_dict(config:dict, model_file:str) -> cores.TransformerDecod
         model.load_state_dict(payload)
     return model
 
+def stop_or_continue(timeout:int=10):
+    try:
+        len_fill = len(str(timeout))        
+        while timeout >= 0:
+            print(f"\rThe training will continue. Press Ctrl+C to stop within {str(timeout).rjust(len_fill, '0')} seconds.", end="\r")
+            time.sleep(1)
+            timeout -= 1
+        print("")
+    except KeyboardInterrupt:
+        sys.exit(1)
+
+def get_epoch_loss_from_checkpoint(file_list:list):
+    loss_list = []
+    for file_name in file_list:
+        payload = torch.load(file_name)
+        epoch = payload['epoch'] + 1
+        train_loss = payload['train_loss']
+        valid_loss = payload['valid_loss']
+        loss_list.append((epoch, train_loss, valid_loss))
+    return loss_list
+
+def show_epoch_loss(loss_list:list):
+    print("\nEpoch | Train loss | Valid loss")
+    for item in loss_list:
+        print(f"{item[0]:02d} | {item[1]:10.5f} | {item[2]:10.5f}")
+    print('')
     
 def train(m_config:dict,
           g_config:dict,
@@ -54,7 +80,7 @@ def train(m_config:dict,
           checkpoint_dir:str='checkpoint',
           epochs:int=20,
           tuning_mode:bool=False,
-          keep_checkpoint_file_num:int=3) -> Union[object, None]:
+          keep_checkpoint_file_num:int=None) -> Union[object, None]:
 
     # train_dataloader, valid_dataloader, vocab, max_seq_len = dataset.load_dataset(config, 
     #                                                                               word_tokenized_file=corpus_file, 
@@ -77,6 +103,7 @@ def train(m_config:dict,
     loss_func = nn.CrossEntropyLoss(ignore_index=sp_tokenizer.pad_token_id)
     optimizer = optim.Adam(params=model.parameters(), lr=m_config['learning_rate'])
     
+    epoch_loss_list = []
     
     init_epoch = 0
     if tuning_mode == True:
@@ -90,18 +117,22 @@ def train(m_config:dict,
     else:
         checkpoint_files = []
         for file_name in os.listdir(checkpoint_dir):
-            if g_config['model']['checkpoint']['state_file_basename'] in file_name:
+            if g_config['model']['checkpoint']['state_file_basename_epoch'] in file_name:
                 checkpoint_files.append(f"{checkpoint_dir}/{file_name}")  
 
         total_files = len(checkpoint_files)
         if total_files > 0:
             checkpoint_files.sort()
+            epoch_loss_list = get_epoch_loss_from_checkpoint(checkpoint_files)
             payload = torch.load(checkpoint_files[-1])
             init_epoch = payload["epoch"] + 1
             model.load_state_dict(payload["model_state_dict"])
             optimizer.load_state_dict(payload["optimizer_state_dict"])
-        
-            if total_files > keep_checkpoint_file_num:
+            print(f"\n{'='*10}Checkpoint{'='*10}")
+            print(f".::.Load last checkpoint from file: {checkpoint_files[-1]}")
+            print(f".::.Epoch {init_epoch}: Train cost: {payload['train_loss']} | Valid cost: {payload['valid_loss']}")
+
+            if keep_checkpoint_file_num != None and total_files > keep_checkpoint_file_num:
                 delele_file_num = total_files - keep_checkpoint_file_num
                 for file in checkpoint_files[:delele_file_num]:
                     if os.path.exists(file):
@@ -111,6 +142,10 @@ def train(m_config:dict,
     print(f"\n{'='*10}Start Training{'='*10}")
     print(f"Epoch start at: {init_epoch + 1}")
     for epoch in range(init_epoch, epochs):
+        
+        if len(epoch_loss_list) > 0:
+            show_epoch_loss(epoch_loss_list)
+
         k = epoch + 1
         # Switch to training mode
         model.train()
@@ -125,7 +160,7 @@ def train(m_config:dict,
             
             print(f".::.Train chunk {chunk} size: {train_dataloader.dataset.__len__()} sentences | Batch size: {train_dataloader.batch_size} | Num Batches: {train_dataloader.__len__()}")
             
-            tqdm_iter = tqdm(train_dataloader, desc=f"Epoch {k:02d}/{epochs}|Train: {chunk}")
+            tqdm_iter = tqdm(train_dataloader, desc=f"Epoch {k:02d}/{epochs}|Step {chunk}")
             for batch in tqdm_iter:
                 decoder_input = batch['decoder_input']
                 decoder_mask = batch['decoder_mask']
@@ -163,7 +198,7 @@ def train(m_config:dict,
                                                                    max_buffer_size=0.5):
                 
                 print(f".::.Valid chunk {chunk} size: {valid_dataloader.dataset.__len__()} sentences | Batch size: {valid_dataloader.batch_size}  | Num Batches: {valid_dataloader.__len__()}")
-                tqdm_iter = tqdm(valid_dataloader, desc=f"Epoch {k:02d}/{epochs}|Valid: {chunk}")
+                tqdm_iter = tqdm(valid_dataloader, desc=f"Epoch {k:02d}/{epochs}|Step {chunk}")
                 for batch in tqdm_iter:
                     decoder_input = batch['decoder_input']
                     decoder_mask = batch['decoder_mask']
@@ -175,13 +210,13 @@ def train(m_config:dict,
                     valid_cost_count += 1
                 chunk += 1
         
-        print(f"{' '*4}.:.Train Cost: {(train_cost / train_cost_count)} | Valid Cost: {(valid_cost / valid_cost_count)}")
-        
+        train_cost = train_cost / train_cost_count
+        valid_cost = valid_cost / valid_cost_count
         
         payload = {
             'epoch': epoch,
-            'train_loss': (train_cost / train_cost_count),
-            'valid_loss': (valid_cost / valid_cost_count),
+            'train_loss': train_cost,
+            'valid_loss': valid_cost,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict()
         }
@@ -198,12 +233,19 @@ def train(m_config:dict,
                 )
                 ray_train.report(
                     {
-                        'train_cost': (train_cost / train_cost_count),
-                        'valid_cost': (valid_cost / valid_cost_count)
+                        'train_cost': train_cost,
+                        'valid_cost': valid_cost
                     },
                     checkpoint=ray_train.Checkpoint.from_directory(chkp_dir)
                 )
-    
+        
+        print(f"{' '*4}.:.Train Cost: {train_cost} | Valid Cost: {valid_cost}\n")
+
+        if epoch < epochs:
+            stop_or_continue()
+        
+        epoch_loss_list.append((k, train_cost, valid_cost))
+
     if tuning_mode == False:
         return model
     
