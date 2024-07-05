@@ -241,7 +241,7 @@ def train(m_config:dict,
         
         print(f"{' '*4}.:.Train Cost: {train_cost} | Valid Cost: {valid_cost}\n")
 
-        if epoch < epochs:
+        if epoch < epochs - 1:
             stop_or_continue()
         
         epoch_loss_list.append((k, train_cost, valid_cost))
