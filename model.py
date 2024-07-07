@@ -165,7 +165,9 @@ def train(m_config:dict,
                 init_epoch = payload["epoch"] + 1
                 model.load_state_dict(payload["model_state_dict"])
                 optimizer.load_state_dict(payload["optimizer_state_dict"])
-                scheduler.load_state_dict(payload["scheduler_state_dict"])
+                
+                if 'scheduler_state_dict' in payload and payload["scheduler_state_dict"] != None:
+                    scheduler.load_state_dict(payload["scheduler_state_dict"])
     else:
         checkpoint_files = []
         for file_name in os.listdir(checkpoint_dir):
@@ -180,19 +182,15 @@ def train(m_config:dict,
             init_epoch = payload["epoch"] + 1
             model.load_state_dict(payload["model_state_dict"])
             optimizer.load_state_dict(payload["optimizer_state_dict"])
-            scheduler.load_state_dict(payload["scheduler_state_dict"])
+            
+            if 'scheduler_state_dict' in payload and payload["scheduler_state_dict"] != None:
+                scheduler.load_state_dict(payload["scheduler_state_dict"])
             
             print(f"\n{'='*10}Checkpoint{'='*10}")
             print(f".::.Load last checkpoint from file: {checkpoint_files[-1]}")
             print(f".::.Epoch {init_epoch}: Train cost: {payload['train_loss']} | Valid cost: {payload['valid_loss']}")
 
-            if keep_checkpoint_file_num != None and total_files > keep_checkpoint_file_num:
-                delele_file_num = total_files - keep_checkpoint_file_num
-                for file in checkpoint_files[:delele_file_num]:
-                    if os.path.exists(file):
-                        os.remove(file)
-
-    
+            
 
     print(f"\n{'='*10}Start Training{'='*10}")
     print(f"Epoch start at: {init_epoch + 1}")
@@ -275,13 +273,30 @@ def train(m_config:dict,
             'valid_loss': valid_cost,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict()
+            'scheduler_state_dict': scheduler.state_dict() if m_config['lr_scheduler'] == True else None
         }
+
 
         if tuning_mode == False:
             num_ordered = str(k).rjust(len(str(epochs)), '0')
             epoch_model_file = f"{checkpoint_dir}/{g_config['model']['checkpoint']['state_file_basename_epoch']}-{num_ordered}.pt"
             save_checkpoint(payload, epoch_model_file)
+
+            if keep_checkpoint_file_num != None:
+                checkpoint_files = []
+                for file_name in os.listdir(checkpoint_dir):
+                    if g_config['model']['checkpoint']['state_file_basename_epoch'] in file_name:
+                        checkpoint_files.append(f"{checkpoint_dir}/{file_name}")
+                
+                total_files = len(checkpoint_files)
+                if total_files > 0:
+                    checkpoint_files.sort()
+                    if total_files > keep_checkpoint_file_num:
+                        delele_file_num = total_files - keep_checkpoint_file_num
+                        for file in checkpoint_files[:delele_file_num]:
+                            if os.path.exists(file):
+                                os.remove(file)
+
         else:
             with tempfile.TemporaryDirectory() as chkp_dir:
                 torch.save(
