@@ -6,9 +6,12 @@ import torch
 
 ROOT_PATH = os.getcwd()
 
-def train_model():
+def train_model(num_sent_corpus:str=None):
+    if num_sent_corpus == None:
+        num_sent_corpus = '101000'
+
     m_config = cfg.get_model_config()
-    g_config = cfg.get_general_config()
+    g_config = cfg.get_general_config(num_sent_corpus)
 
     # vocab_file = f"{data_dir}/{g_config['data_src']['vocab_file_name']}"
     # word_tokenized_file = f"{data_dir}/viwiki_word_tokenized_sentences.txt"
@@ -19,7 +22,7 @@ def train_model():
     
     corpus_file = f"{ROOT_PATH}/{data_dirname}/{g_config['data_src']['corpus_file_name']}"
     sp_model_file = f"{ROOT_PATH}/{data_dirname}/{g_config['data_src']['sp_model_file']}"
-    tmp_dir = f"{ROOT_PATH}/tmp"
+    tmp_dir = f"{ROOT_PATH}/tmp/{num_sent_corpus}"
     checkpoint_dir = f"{ROOT_PATH}/{checkpoint_dirname}"
 
 
@@ -29,7 +32,9 @@ def train_model():
                             sp_model_file=sp_model_file,
                             tmp_dir=tmp_dir,
                             checkpoint_dir=checkpoint_dir,
-                            epochs=m_config['epochs'])
+                            epochs=m_config['epochs'],
+                            keep_checkpoint_file_num=2)
+    
     print("Training phase has finished.")
       
     cur_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -39,44 +44,5 @@ def train_model():
     print(f"Model has been saved as: {file_name}")
 
 
-def text_generation(prompts:list[str]):
-    m_config = cfg.get_model_config()
-    g_config = cfg.get_general_config()
-    
-    data_dir = g_config['data_src']['dirname']
-    sp_model_file = f"{data_dir}/{g_config['data_src']['sp_model_file']}"
-
-    sp_tokenizer = VnTokenizer(sp_model_file)
-    m_config['vocab_size'] = sp_tokenizer.vocab_size
-
-    model_file = _latest_file()
-    gpt_model = model.load_model_state_dict(m_config, model_file)
-    model.generate(gpt_model, sp_tokenizer, m_config, prompts=prompts, top_type='k', top_k=20, temperature=0.9)
-
-
-def _latest_file():
-    files = []
-    config = cfg.get_general_config()
-    dirname = config['model']['final']['dirname']
-    for file_name in os.listdir(dirname):
-        if config['model']['final']['state_file_basename'] in file_name:
-            files.append(f"{dirname}/{file_name}")    
-    
-    if len(files) == 0:
-        return None
-    
-    return max(files, key=os.path.getctime)
-         
-
-
-if __name__ == "__main__":
-    
-    train_model() 
-    
-    # prompts = [
-    #     'Ngân hàng SCB và các khoản vay của bà Trương Mỹ Lan',
-    #     'Chỉ số chứng khoán VNINDEX năm 2023',
-    #     # 'Dự án sân bay biên hòa',
-    #     # 'Dự án căn hộ chung cư tại TPHCM năm 2023'
-    # ]
-    # text_generation(prompts)
+if __name__ == "__main__":    
+    train_model('151000')

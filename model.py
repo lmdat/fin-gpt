@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 from torch import optim
+from torch.optim import lr_scheduler
+
 import torch.nn.functional as F
 import cores
 import dataset
@@ -14,7 +16,10 @@ from ray import train as ray_train
 import tempfile
 from typing import Union
 
+from functools import partial
+
 from config import ModelParams, get_model_params
+
 
 
 def build_model(conf:dict) -> cores.TransformerDecoder:
@@ -38,7 +43,7 @@ def save_model_state_dict(model:cores.TransformerDecoder, output_file:str) -> st
 
 def load_model_state_dict(config:dict, model_file:str) -> cores.TransformerDecoder:
     model = build_model(config)
-    payload = torch.load(model_file)
+    payload = torch.load(model_file, map_location=torch.device('cpu'))
     if 'model_state_dict' in payload:
         model.load_state_dict(payload['model_state_dict'])
     else:
@@ -71,16 +76,53 @@ def show_epoch_loss(loss_list:list):
     for item in loss_list:
         print(f"{item[0]:02d} | {item[1]:10.5f} | {item[2]:10.5f}")
     print('')
+
+def get_device() -> str:
+    device = None 
+    if torch.cuda.is_available():
+        device = 'cuda'
+    elif torch.backends.mps.is_available():
+        device = 'mps'
+    else:
+        device = 'cpu'
+
+    return device
+
+def _custom_lr_noam_lambda(step:int, *, embed_dim:int, warmup_steps:int):
+    lr = (embed_dim ** (-0.5)) * min(step ** (-0.5), step * warmup_steps ** (-1.5))
+    return lr
+
+def _custom_lr_epoch_lambda(step:int, *, base_lr:float, scale:float):
+    return base_lr / (1 + (scale * step))
+
+
+def log_train_loss(log_file:str, content:str):
+    if os.path.dirname(log_file) != "":
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+    with open(log_file, mode='a', encoding='utf-8') as f_log:
+        f_log.write(f"{content}\n")
+        f_log.close()
     
+
 def train(m_config:dict,
           g_config:dict,
           corpus_file:str,
           sp_model_file:str,
           tmp_dir:str="tmp",
           checkpoint_dir:str='checkpoint',
+          log_file:str='log/train.log',
           epochs:int=20,
           tuning_mode:bool=False,
-          keep_checkpoint_file_num:int=None) -> Union[object, None]:
+          keep_checkpoint_file_num:int=None,
+          alow_manual_interrupt:bool=True,
+          device:str=None) -> Union[object, None]:
+    
+    if device == None:
+        device = get_device()
+    
+    print(f".::.Device: {device}")
+    device = torch.device(device)
 
     # train_dataloader, valid_dataloader, vocab, max_seq_len = dataset.load_dataset(config, 
     #                                                                               word_tokenized_file=corpus_file, 
@@ -99,9 +141,18 @@ def train(m_config:dict,
 
     train_file, valid_file = dataset.prepair_corpus(m_config, corpus_file, tmp_dir, test_size=0.2)
 
-    model = build_model(m_config)
+    model = build_model(m_config).to(device)
+
     loss_func = nn.CrossEntropyLoss(ignore_index=sp_tokenizer.pad_token_id)
-    optimizer = optim.Adam(params=model.parameters(), lr=m_config['learning_rate'])
+    
+    base_lr = m_config['learning_rate']
+    scale_factor = m_config['scale_lr']
+    optimizer = optim.Adam(params=model.parameters(), lr=base_lr)
+    
+    custom_lr_epoch_lambda = partial(_custom_lr_epoch_lambda,
+                        base_lr=base_lr,
+                        scale=scale_factor)
+    scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=custom_lr_epoch_lambda)
     
     epoch_loss_list = []
     
@@ -110,10 +161,11 @@ def train(m_config:dict,
         last_checkpoint = ray_train.get_checkpoint()
         if last_checkpoint:
             with last_checkpoint.as_directory() as chkp_dir:
-                payload = torch.load(os.path.join(chkp_dir, g_config['model']['tuning']['checkpoint_basename']))
+                payload = torch.load(os.path.join(chkp_dir, g_config['model']['tuning']['checkpoint_basename']), map_location=device)
                 init_epoch = payload["epoch"] + 1
                 model.load_state_dict(payload["model_state_dict"])
                 optimizer.load_state_dict(payload["optimizer_state_dict"])
+                scheduler.load_state_dict(payload["scheduler_state_dict"])
     else:
         checkpoint_files = []
         for file_name in os.listdir(checkpoint_dir):
@@ -123,11 +175,13 @@ def train(m_config:dict,
         total_files = len(checkpoint_files)
         if total_files > 0:
             checkpoint_files.sort()
-            epoch_loss_list = get_epoch_loss_from_checkpoint(checkpoint_files)
-            payload = torch.load(checkpoint_files[-1])
+            # epoch_loss_list = get_epoch_loss_from_checkpoint(checkpoint_files)
+            payload = torch.load(checkpoint_files[-1], map_location=device)
             init_epoch = payload["epoch"] + 1
             model.load_state_dict(payload["model_state_dict"])
             optimizer.load_state_dict(payload["optimizer_state_dict"])
+            scheduler.load_state_dict(payload["scheduler_state_dict"])
+            
             print(f"\n{'='*10}Checkpoint{'='*10}")
             print(f".::.Load last checkpoint from file: {checkpoint_files[-1]}")
             print(f".::.Epoch {init_epoch}: Train cost: {payload['train_loss']} | Valid cost: {payload['valid_loss']}")
@@ -138,6 +192,7 @@ def train(m_config:dict,
                     if os.path.exists(file):
                         os.remove(file)
 
+    
 
     print(f"\n{'='*10}Start Training{'='*10}")
     print(f"Epoch start at: {init_epoch + 1}")
@@ -145,7 +200,7 @@ def train(m_config:dict,
         
         if len(epoch_loss_list) > 0:
             show_epoch_loss(epoch_loss_list)
-
+        
         k = epoch + 1
         # Switch to training mode
         model.train()
@@ -162,9 +217,9 @@ def train(m_config:dict,
             
             tqdm_iter = tqdm(train_dataloader, desc=f"Epoch {k:02d}/{epochs}|Step {chunk}")
             for batch in tqdm_iter:
-                decoder_input = batch['decoder_input']
-                decoder_mask = batch['decoder_mask']
-                targets = batch['label'] # (batch_size, seq_len)
+                decoder_input = batch['decoder_input'].to(device)
+                decoder_mask = batch['decoder_mask'].to(device)
+                targets = batch['label'].to(device) # (batch_size, seq_len)
                                                             
                 # Forward pass
                 pred_logits = model(decoder_input, decoder_mask) # (batch_size, seq_len, vocab_size)
@@ -183,7 +238,8 @@ def train(m_config:dict,
                 # Update parameters
                 optimizer.step()
             chunk += 1
-            
+
+        
                
         # Switch to validation mode
         model.eval()
@@ -200,9 +256,9 @@ def train(m_config:dict,
                 print(f".::.Valid chunk {chunk} size: {valid_dataloader.dataset.__len__()} sentences | Batch size: {valid_dataloader.batch_size}  | Num Batches: {valid_dataloader.__len__()}")
                 tqdm_iter = tqdm(valid_dataloader, desc=f"Epoch {k:02d}/{epochs}|Step {chunk}")
                 for batch in tqdm_iter:
-                    decoder_input = batch['decoder_input']
-                    decoder_mask = batch['decoder_mask']
-                    targets = batch['label'] # (batch_size, seq_len)
+                    decoder_input = batch['decoder_input'].to(device)
+                    decoder_mask = batch['decoder_mask'].to(device)
+                    targets = batch['label'].to(device) # (batch_size, seq_len)
                     pred_logits = model(decoder_input, decoder_mask) # (batch_size, seq_len, vocab_size)
                     valid_loss = loss_func(pred_logits.view(-1, m_config['vocab_size']), targets.view(-1))
                     tqdm_iter.set_postfix({"Valid loss": f"{valid_loss.item():10.4f}"})
@@ -218,7 +274,8 @@ def train(m_config:dict,
             'train_loss': train_cost,
             'valid_loss': valid_cost,
             'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict()
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict()
         }
 
         if tuning_mode == False:
@@ -239,11 +296,19 @@ def train(m_config:dict,
                     checkpoint=ray_train.Checkpoint.from_directory(chkp_dir)
                 )
         
+        
         print(f"{' '*4}.:.Train Cost: {train_cost} | Valid Cost: {valid_cost}\n")
 
+        log_train_loss(log_file, f"Epoch {k} | Train: {train_cost} | Valid: {valid_cost}\n")
+
         if epoch < epochs - 1:
-            stop_or_continue()
+            if alow_manual_interrupt == True:
+                stop_or_continue()
         
+        # Change & update lr to optimizer 
+        if m_config['lr_scheduler'] == True:
+            scheduler.step()
+
         epoch_loss_list.append((k, train_cost, valid_cost))
 
     if tuning_mode == False:

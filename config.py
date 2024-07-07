@@ -27,34 +27,72 @@ class ModelParams:
     learning_rate:float = 1e-2
 
 
-def get_model_config() -> dict:
-    return {
-        "epochs": 25,
-        "train_batch_size": 32,
-        "valid_batch_size": 32,
-        "sequence_len": 300,
-        "embed_dim": 480, # 456, 480, 512, 516, 576
-        "num_heads": 12,
-        "num_kv_heads": None,
-        "num_decoders": 8,
-        "ff_dim": 512, # 400, 433, 451, 512
-        "dropout_prob": 0.2,
-        "activation_name": 'gelu',
-        "norm_placing": 'post',
-        "learning_rate": 1e-2
-    }
+def get_model_config(num_key:int=2) -> dict:
+    config = {
+        '1': {
+            "epochs": 25,
+            "train_batch_size": 32,
+            "valid_batch_size": 32,
+            "sequence_len": 250,
+            "embed_dim": 384, # 456, 480, 512, 516, 576
+            "num_heads": 8,
+            "num_kv_heads": None,
+            "num_decoders": 6,
+            "ff_dim": 541, # 400, 433, 451, 512
+            "dropout_prob": 0.2,
+            "activation_name": 'gelu',
+            "norm_placing": 'post',
+            "learning_rate": 1e-2
+        },
+        '2': {
+            "epochs": 25,
+            "train_batch_size": 32,
+            "valid_batch_size": 32,
+            "sequence_len": 300,
+            "embed_dim": 480, # 456, 480, 512, 516, 576
+            "num_heads": 12,
+            "num_kv_heads": None,
+            "num_decoders": 8,
+            "ff_dim": 512, # 400, 433, 451, 512
+            "dropout_prob": 0.2,
+            "activation_name": 'gelu',
+            "norm_placing": 'post',
+            "learning_rate": 0.01,
+            "scale_lr": 0.1,
+            "lr_scheduler": True
+        },
+        '3': {
+            "epochs": 100,
+            "train_batch_size": 32,
+            "valid_batch_size": 32,
+            "sequence_len": 300,
+            "embed_dim": 576, # 456, 480, 512, 516, 576
+            "num_heads": 12,
+            "num_kv_heads": None,
+            "num_decoders": 12,
+            "ff_dim": 512, # 400, 433, 451, 512
+            "dropout_prob": 0.2,
+            "activation_name": 'gelu',
+            "norm_placing": 'post',
+            "learning_rate": 0.1,
+            "scale_lr": 0.1,
+            "lr_scheduler": True
+        }
+    }    
+    return config[str(num_key)]
 
-def get_general_config() -> dict:
+def get_general_config(num_sent_corpus:str='101000') -> dict:
+    
     return {
         "data_src": {
             "dirname": "data",
-            "corpus_file_name": "sp_fin_all_small_word_tokenized_sentences.txt",
-            'sp_model_file': "sp_tokenizer_model_word.model"
+            "corpus_file_name": f"sp_fin_all_small_space_word_tokenized_{num_sent_corpus}_sentences.txt",
+            'sp_model_file': f"sp_tokenizer_{num_sent_corpus}_sentences_model_space_word.model"
         },
         "model": {
             "final": {
                 "dirname": "export", 
-                "state_file_basename": "fin_model_state_dict_final",
+                "state_file_basename": f"fin_model_state_dict_final_{num_sent_corpus}",
             },
             "checkpoint":{
                 "dirname": "checkpoint", 

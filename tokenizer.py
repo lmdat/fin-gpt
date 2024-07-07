@@ -38,14 +38,18 @@ class VnTokenizer:
         return [self.decode(tokens) for tokens in prompt_tokens]
             
     
-    def word_tokenize_text(self, prompt:str, lower_case:bool=True) -> str:
+    def word_tokenize_text(self, prompt:str, lower_case:bool=False, word_with_hyphen:bool=False) -> str:
         if lower_case == True:
             prompt = prompt.lower()
-        return word_tokenize(prompt, format='text')
+        
+        if word_with_hyphen == True:
+            return word_tokenize(prompt, format='text')
+        
+        words = word_tokenize(prompt)
+        return " ".join(words)
     
-    
-    def word_tokenize_text_all(self, prompts:list[str], lower_case:bool=True) -> list[str]:
-        return [self.word_tokenize_text(p, lower_case) for p in prompts]
+    def word_tokenize_text_all(self, prompts:list[str], lower_case:bool=False, word_with_hyphen:bool=False) -> list[str]:
+        return [self.word_tokenize_text(p, lower_case, word_with_hyphen) for p in prompts]
         
     
     def origin_sentence(self, text:str) -> str:
